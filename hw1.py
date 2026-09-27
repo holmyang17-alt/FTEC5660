@@ -53,34 +53,95 @@ def image_data_url(path: Path) -> str:
 
 
 def build_chain() -> Any:
-    """Create and return your LangChain chain once.
+    """Create and return your LangChain chain once."""
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_deepseek import ChatDeepSeek
 
-    Suggested imports:
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_deepseek import ChatDeepSeek
+    model = ChatDeepSeek(
+        model="deepseek-v4-flash-vision-exp",
+        temperature=0,
+    )
 
-    Use the vision-capable DeepSeek Flash model named
-    ``deepseek-v4-flash-vision-exp``. The API key is loaded from .env.
-    """
-    ### YOUR CODE HERE
-    return None
+    system_text = (
+        "You are an expert at reading supermarket receipts. "
+        "From the receipt image, find two numbers and return them as a single JSON object "
+        "with keys pre_discount_total and final_payment. "
+        "pre_discount_total is the sum of ALL item prices BEFORE any discount, promotion, "
+        "or coupon is applied. Equivalently, it is the SUBTOTAL line amount plus every "
+        "discount/promotion/coupon amount added back as a positive number. "
+        "Do NOT include the ROUNDING line. "
+        "final_payment is the final amount actually paid after ROUNDING, "
+        "the payment line such as OCTOPUS, VISA, CASH, etc. "
+        "Return ONLY the JSON object. No explanation, no currency symbols, no extra text. "
+        "Example of the shape: pre_discount_total is 107.70, final_payment is 102.30."
+    )
+
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_text),
+        ("human", [
+            {"type": "text", "text": "Here is the receipt image. Return the JSON object."},
+            {"type": "image_url", "image_url": {"url": "{image_url}"}},
+        ]),
+    ])
+
+    return prompt | model
 
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
-    """Run your chain and return one response for each exact query string.
+    """Run your chain and return one response for each exact query string."""
+    from collections import Counter
 
-    ``images`` contains every receipt in the selected folder. A valid return
-    value looks like:
+    def _amount(value: Any) -> Decimal:
+        s = str(value).replace(",", "").replace("HK$", "").replace("$", "").strip()
+        return Decimal(s).quantize(Decimal("0.01"))
 
-        {QUERY_1: "HK$123.40", QUERY_2: "HK$150.00"}
+    n_votes = 3
+    inputs = []
+    for path in images:
+        url = image_data_url(path)
+        for _ in range(n_votes):
+            inputs.append({"image_url": url})
 
-    Use the provided ``image_data_url(path)`` helper to put local images in
-    multimodal human messages. LangChain's ``batch`` method is one simple way
-    to process independent receipt-extraction prompts in parallel.
-    """
-    ### YOUR CODE HERE
-    _ = (chain, images)
-    return {QUERY_1: DUMMY_RESPONSE, QUERY_2: DUMMY_RESPONSE}
+    results = chain.batch(inputs)
+
+    per_image = []
+    for i in range(len(images)):
+        votes = []
+        for j in range(n_votes):
+            text = response_text(results[i * n_votes + j])
+            data = None
+            try:
+                data = json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                m = re.search(r"\{.*\}", text, flags=re.S)
+                if m:
+                    try:
+                        data = json.loads(m.group(0))
+                    except (json.JSONDecodeError, TypeError):
+                        data = None
+            if isinstance(data, dict) and "pre_discount_total" in data and "final_payment" in data:
+                try:
+                    votes.append((
+                        _amount(data["final_payment"]),
+                        _amount(data["pre_discount_total"]),
+                    ))
+                except (InvalidOperation, TypeError):
+                    pass
+        per_image.append(votes)
+
+    total_q1 = Decimal("0")
+    total_q2 = Decimal("0")
+    for votes in per_image:
+        if not votes:
+            continue
+        best, _ = Counter(votes).most_common(1)[0]
+        total_q1 += best[0]
+        total_q2 += best[1]
+
+    return {
+        QUERY_1: f"HK${total_q1:.2f}",
+        QUERY_2: f"HK${total_q2:.2f}",
+    }
 
 
 # Everything below is provided runner/scoring code. No edits are needed.

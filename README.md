@@ -48,6 +48,46 @@ DeepSeek Flash model. JPEG, PNG, GIF, and WebP inputs are accepted by the
 homework runner.
 
 
-## Homework 1 solution: 
-> to students: please fill your solution description here.
+## Homework 1 solution:
+
+### Chain design
+
+Receipt images
+     |
+     v
+image_data_url()  ->  base64 data URL
+     |
+     v
+ChatPromptTemplate (system + human with image_url)
+     |
+     v
+ChatDeepSeek (deepseek-v4-flash-vision-exp, temperature=0)
+     |
+     v
+JSON: {pre_discount_total, final_payment}
+     |
+     v
+Majority vote (3 per image)
+     |
+     v
+Sum across all receipts
+     |
+     v
+{QUERY_1: "HK$...", QUERY_2: "HK$..."}
+
+### Description
+
+My chain uses one vision-language model call per receipt. Each image is encoded
+as a base64 data URL by image_data_url() and passed to a ChatPromptTemplate
+whose human message contains a text instruction and an image_url block. The
+system prompt asks the model to return only a JSON object with two keys:
+pre_discount_total (SUBTOTAL plus all discounts added back, excluding ROUNDING)
+and final_payment (the amount actually charged after ROUNDING). The prompt is
+bound to ChatDeepSeek with model deepseek-v4-flash-vision-exp and
+temperature=0. Because a single pass is occasionally off by one line on
+cluttered receipts, each image is queried three times and the most frequent
+answer is kept. The per-receipt values are summed across the folder, and the
+two totals are returned as QUERY_1 and QUERY_2 with exactly one HKD amount
+each. On the public receipts this gives HK$1974.30 and HK$2348.20, matching
+ground_truth.json.
 
